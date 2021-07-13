@@ -1,8 +1,28 @@
 package com.example.yuntunative;
 
 import android.annotation.SuppressLint;
+import android.app.Application;
+import android.content.Context;
+import android.content.pm.PackageManager;
+import android.location.Location;
+import android.location.LocationListener;
+import android.location.LocationManager;
+import android.os.Build;
+import android.os.Bundle;
+import android.os.Handler;
+import android.os.HandlerThread;
+import android.os.Looper;
+import android.telephony.CellLocation;
+import android.telephony.PhoneStateListener;
+import android.telephony.ServiceState;
+import android.telephony.SignalStrength;
 import android.telephony.TelephonyManager;
+import android.telephony.cdma.CdmaCellLocation;
+import android.telephony.gsm.GsmCellLocation;
 import android.util.Log;
+
+import androidx.annotation.RequiresApi;
+import androidx.core.app.ActivityCompat;
 
 import com.blankj.utilcode.util.LogUtils;
 import com.blankj.utilcode.util.StringUtils;
@@ -12,6 +32,9 @@ import com.blankj.utilcode.util.Utils;
 import org.json.JSONException;
 import org.json.JSONObject;
 
+import java.io.IOException;
+import java.net.InetAddress;
+
 
 /**
  * Created by willssong on 2021/3/24
@@ -20,9 +43,15 @@ import org.json.JSONObject;
 class YuntuHal {
     private final static String TAG = "iotsdk";
 
+    private static final int QCLOUD_RET_SUCCESS = 0;
+    private static final int QCLOUD_ERR_FAILURE = -1001;
+    private static int lastSignal;
+
+    private static TelephonyManager teleManager;
+
     public static String getImei() {
-        TelephonyManager telephonyManager = Utils.getApp().getSystemService(TelephonyManager.class);
-        String imei = telephonyManager.getImei();
+        if (teleManager == null) return "851234567890";
+        String imei = teleManager.getImei();
         if (StringUtils.isEmpty(imei)) {
             imei = "851234567890";
         }
@@ -31,13 +60,12 @@ class YuntuHal {
     }
 
     public static int getDbm() {
-        Log.d(TAG, "getDbm ");
-        return -60;
+        Log.d(TAG, "getDbm " + lastSignal);
+        return lastSignal;
     }
 
-    public static String getICCID() {
-        TelephonyManager telephonyManager = Utils.getApp().getSystemService(TelephonyManager.class);
-        String iccid = telephonyManager.getSimSerialNumber();
+    public static String getICCID() {//99860619120071523724
+        String iccid = teleManager.getSimSerialNumber();
 
         if (StringUtils.isEmpty(iccid)) {
             iccid = "99345678901234567890";
@@ -47,8 +75,7 @@ class YuntuHal {
     }
 
     public static String getIMSI() {
-        TelephonyManager telephonyManager = Utils.getApp().getSystemService(TelephonyManager.class);
-        String imsi = telephonyManager.getSubscriberId();
+        String imsi = teleManager.getSubscriberId();
         if (StringUtils.isEmpty(imsi)) {
             imsi = "123456789012345";
         }
@@ -58,10 +85,20 @@ class YuntuHal {
 
     public static String getCellid() {
         Log.d(TAG, "getCellid ");
+        CellLocation cellLocation = teleManager.getCellLocation();
+        String lat = "";
+        String cell = "";
+        if (cellLocation instanceof GsmCellLocation) {
+            cell = ((GsmCellLocation)cellLocation).getCid() + "";
+            lat = ((GsmCellLocation)cellLocation).getLac() + "";
+        } else if (cellLocation instanceof CdmaCellLocation) {
+            cell = ((CdmaCellLocation)cellLocation).getBaseStationId() + "";
+            lat = ((CdmaCellLocation)cellLocation).getNetworkId() + "";
+        }
         JSONObject jsonObject = new JSONObject();
         try {
-            jsonObject.put("lat", "1234");
-            jsonObject.put("cell", "200");
+            jsonObject.put("lat", lat);
+            jsonObject.put("cell", cell);
         } catch (JSONException e) {
             e.printStackTrace();
         }
@@ -69,11 +106,13 @@ class YuntuHal {
     }
 
     public static int getOperator() {
-        TelephonyManager telephonyManager = Utils.getApp().getSystemService(TelephonyManager.class);
-        String simOperator = telephonyManager.getSimOperator();
-        LogUtils.d("getOperator=" + simOperator);
+//        TelephonyManager telephonyManager = Utils.getApp().getSystemService(TelephonyManager.class);
+//        String simOperator = telephonyManager.getSimOperator();
+        int networkVendor = getNetworkVendor();
+        networkVendor++;
+        LogUtils.d("getOperator=" + networkVendor);
         // 1: china mobile; 2: china unicomm; 3: china telcom
-        return 1;
+        return networkVendor;
     }
 
     /**
@@ -85,9 +124,8 @@ class YuntuHal {
      * @return
      */
     public static int getNetworkMode() {
-        TelephonyManager telephonyManager = Utils.getApp().getSystemService(TelephonyManager.class);
         @SuppressLint("MissingPermission")
-        int networkType = telephonyManager.getNetworkType();
+        int networkType = teleManager.getNetworkType();
         int networkMode = 2;
         // 2: 2G;  3: 3G; 4: 4G
         Log.d(TAG, "getNetworkMode ");
@@ -126,17 +164,65 @@ class YuntuHal {
     public static int getPsStatus() {
         // 0: detached  1: attached
         Log.d(TAG, "getPsStatus ");
-
+        ServiceState serviceState = teleManager.getServiceState();
+        serviceState.getRoaming()
         return 1;
     }
 
     public static String getLocation() {
         // {"lontitude":"100", "latitude":"200"}
         Log.d(TAG, "getLocation ");
+        LocationManager mlocationManager = (LocationManager) Utils.getApp().
+                getSystemService(Context.LOCATION_SERVICE);
+
+        double latitude = 0;
+        double longitude = 0;
+        if (mlocationManager.isProviderEnabled(LocationManager.GPS_PROVIDER)) {
+
+            Location location = mlocationManager.getLastKnownLocation(LocationManager.GPS_PROVIDER);
+            if(location != null){
+                latitude = location.getLatitude();
+                longitude = location.getLongitude();
+            }
+        } else {
+            LocationListener locationListener = new LocationListener() {
+                // Provider的状态在可用、暂时不可用和无服务三个状态直接切换时触发此函数
+                @Override
+                public void onStatusChanged(String provider, int status, Bundle extras) {
+
+                }
+                // Provider被enable时触发此函数，比如GPS被打开
+                @Override
+                public void onProviderEnabled(String provider) {
+
+                }
+                // Provider被disable时触发此函数，比如GPS被关闭
+                @Override
+                public void onProviderDisabled(String provider) {
+
+                }
+                //当坐标改变时触发此函数，如果Provider传进相同的坐标，它就不会被触发
+                @Override
+                public void onLocationChanged(Location location) {
+                   /* if (location != null) {
+                        Log.e("Map", "Location changed : Lat: "
+                                + location.getLatitude() + " Lng: "
+                                + location.getLongitude());
+                    }*/
+                }
+            };
+            mlocationManager.requestLocationUpdates(LocationManager.NETWORK_PROVIDER,1000, 0, locationListener);
+            Location location = mlocationManager.getLastKnownLocation(LocationManager.NETWORK_PROVIDER);
+            if(location != null){
+                latitude = location.getLatitude(); //经度
+                longitude = location.getLongitude(); //纬度
+            }
+
+        }
         JSONObject jsonObject = new JSONObject();
         try {
-            jsonObject.put("lontitude", "100");
-            jsonObject.put("latitude", "200");
+            jsonObject.put("lontitude", longitude + "");
+            jsonObject.put("latitude", latitude + "");
         } catch (JSONException e) {
             e.printStackTrace();
         }
@@ -146,28 +232,41 @@ class YuntuHal {
     public static String sendATCmd(String atCmd, int timeOut) {
         Log.d(TAG, "sendATCmd " + atCmd + " in " + timeOut);
 //        YunTuUtils.sendATcommand(atCmd);
-
+        if (teleManager.hasCarrierPrivileges()) {
+            return teleManager.sendEnvelopeWithStatus(atCmd);
+        }
         return "OK";
     }
 
     public static int autoDialUp() {
         Log.d(TAG, "autoDialUp");
+        teleManager.setDataEnabled(true);
         return 0;
     }
 
     public static int resetModem() {
         Log.d(TAG, "resetModem");
-        return 0;
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            teleManager.setDataEnabled(false);
+            Log.d(TAG, "resetModem " +teleManager.getDataState());
+            teleManager.setDataEnabled(true);
+            return QCLOUD_RET_SUCCESS;
+        } else {
+            return QCLOUD_RET_SUCCESS;
+        }
     }
 
     public static int getNetworkDelay() {
         Log.d(TAG, "getNetworkDelay");
-        PingNetEntity pingNetEntity = new PingNetEntity("119.29.29.29", 1, 2,
-                new StringBuffer());
-        pingNetEntity = PintNet.ping(pingNetEntity);
-        String pingTime = pingNetEntity.getPingTime();
-        LogUtils.d(pingTime);
-        return 100;
+//        PingNetEntity pingNetEntity = new PingNetEntity("119.29.29.29", 1, 2,
+//                new StringBuffer());
+//        pingNetEntity = PintNet.ping(pingNetEntity);
+//        String pingTime = pingNetEntity.getPingTime();
+//        LogUtils.d(pingTime);
+        long delay2 = new NetPingManager(Utils.getApp(), "119.29.29.29").getDelay2();
+        Log.d(TAG, "getNetworkDelay " + delay2);
+        return (int) delay2;
     }
 
     public static int saveConfig(String config) {
@@ -196,13 +295,35 @@ class YuntuHal {
 
     public static int checkNetwork(String host) {
         Log.d(TAG, "checkNetwork " + host);
-        int i = PintNet.checkNetwork(host);
-        return 0;
+
+        try {
+            int is = InetAddress.getByName(host).isReachable(3000) ? QCLOUD_RET_SUCCESS :QCLOUD_ERR_FAILURE;
+            Log.d(TAG, "checkNetwork " + is);
+            return is;
+        } catch (IOException e) {
+            return QCLOUD_ERR_FAILURE;
+        }
     }
 
     public static int deviceInit() {
         Log.d(TAG, "deviceInit");
-
-        return 0;
+        teleManager = (TelephonyManager) Utils.getApp().
+                getSystemService(Context.TELEPHONY_SERVICE);
+        if (teleManager == null) return QCLOUD_ERR_FAILURE;
+        Handler handler = new Handler(Looper.getMainLooper());
+        handler.post(new Runnable() {
+            @Override
+            public void run() {
+                teleManager.listen(new PhoneStateListener() {
+                    @Override
+                    public void onSignalStrengthsChanged(SignalStrength signalStrength) {
+                        super.onSignalStrengthsChanged(signalStrength);
+                        int asu = signalStrength.getGsmSignalStrength();
+                        lastSignal = -113 + 2 * asu;
+                    }
+                }, PhoneStateListener.LISTEN_SIGNAL_STRENGTHS);
+            }
+        });
+        return QCLOUD_RET_SUCCESS;
     }
 }

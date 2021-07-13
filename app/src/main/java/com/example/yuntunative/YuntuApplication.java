@@ -10,10 +10,10 @@ public class YuntuApplication extends Application {
     public void onCreate() {
         super.onCreate();
         Utils.init(this);
-        try {
-            YunTuUtils.defaultPhone();
-        } catch (Exception e) {
-            e.printStackTrace();
-        }
+//        try {
+//            YunTuUtils.defaultPhone();
+//        } catch (Exception e) {
+//            e.printStackTrace();
+//        }
     }
 }
